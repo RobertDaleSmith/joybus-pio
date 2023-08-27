@@ -3,13 +3,13 @@
 
 #include <pico/stdlib.h>
 
-enum class GamecubeCommand {
-    PROBE = 0x00,
-    RESET = 0xFF,
-    ORIGIN = 0x41,
-    RECALIBRATE = 0x42,
-    POLL = 0x40,
-};
+typedef enum {
+    GamecubeCommand_PROBE = 0x00,
+    GamecubeCommand_RESET = 0xFF,
+    GamecubeCommand_ORIGIN = 0x41,
+    GamecubeCommand_RECALIBRATE = 0x42,
+    GamecubeCommand_POLL = 0x40,
+} GamecubeCommand;
 
 typedef struct __attribute__((packed)) {
     bool a : 1;
@@ -48,39 +48,45 @@ typedef struct __attribute__((packed)) {
     uint8_t status;
 } gc_status_t;
 
-static constexpr gc_report_t default_gc_report = {
-    .a = 0,
-    .b = 0,
-    .x = 0,
-    .y = 0,
-    .start = 0,
-    .origin = 0,
-    .reserved0 = 0,
-    .dpad_left = 0,
-    .dpad_right = 0,
-    .dpad_down = 0,
-    .dpad_up = 0,
-    .z = 0,
-    .r = 0,
-    .l = 0,
-    .reserved1 = 1,
-    .stick_x = 128,
-    .stick_y = 128,
-    .cstick_x = 128,
-    .cstick_y = 128,
-    .l_analog = 0,
-    .r_analog = 0,
-};
+#define DEFAULT_GC_REPORT_INITIALIZER {    \
+    .a = 0,                                \
+    .b = 0,                                \
+    .x = 0,                                \
+    .y = 0,                                \
+    .start = 0,                            \
+    .origin = 0,                           \
+    .reserved0 = 0,                        \
+    .dpad_left = 0,                        \
+    .dpad_right = 0,                       \
+    .dpad_down = 0,                        \
+    .dpad_up = 0,                          \
+    .z = 0,                                \
+    .r = 0,                                \
+    .l = 0,                                \
+    .reserved1 = 1,                        \
+    .stick_x = 128,                        \
+    .stick_y = 128,                        \
+    .cstick_x = 128,                       \
+    .cstick_y = 128,                       \
+    .l_analog = 0,                         \
+    .r_analog = 0                          \
+}
 
-static constexpr gc_origin_t default_gc_origin = {
-    .initial_inputs = default_gc_report,
-    .reserved0 = 0,
-    .reserved1 = 0,
-};
+extern gc_report_t default_gc_report;
 
-static constexpr gc_status_t default_gc_status = {
-    .device = 0x0009,
-    .status = 0x03,
-};
+#define DEFAULT_GC_ORIGIN_INITIALIZER {    \
+    .initial_inputs = DEFAULT_GC_REPORT_INITIALIZER, \
+    .reserved0 = 0,                        \
+    .reserved1 = 0                         \
+}
+
+extern gc_origin_t default_gc_origin;
+
+#define DEFAULT_GC_STATUS_INITIALIZER {    \
+    .device = 0x0009,                      \
+    .status = 0x03                         \
+}
+
+extern gc_status_t default_gc_status;
 
 #endif
