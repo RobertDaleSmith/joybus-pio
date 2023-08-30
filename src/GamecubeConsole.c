@@ -57,11 +57,9 @@ bool __no_inline_not_in_flash_func(GamecubeConsole_Detect)(GamecubeConsole* cons
 }
 
 bool __no_inline_not_in_flash_func(GamecubeConsole_WaitForPoll)(GamecubeConsole* console) {
-    // printf("GamecubeConsole_WaitForPoll\n");
     while (true) {
         GamecubeConsole_WaitForPollStart(console);
         PollStatus status = GamecubeConsole_WaitForPollEnd(console);
-        // printf("PollStatus: %d\n", status);
 
         if (status == PollStatus_ERROR) {
             busy_wait_us(gc_reset_wait_period_us);
@@ -74,29 +72,33 @@ bool __no_inline_not_in_flash_func(GamecubeConsole_WaitForPoll)(GamecubeConsole*
 }
 
 void __no_inline_not_in_flash_func(GamecubeConsole_WaitForPollStart)(GamecubeConsole* console) {
-    // printf("GamecubeConsole_WaitForPollStart\n");
     uint8_t received[1];
     while (true) {
         joybus_receive_bytes(&console->_port, received, 1, gc_receive_timeout_us, false);
-        // printf("Received: 0x%x\n", (GamecubeCommand)received[0]);
 
         switch ((GamecubeCommand)received[0]) {
+            case GamecubeCommand_GAME_ID:
+                printf("GAMEID: ");
+                uint8_t gameId[10];
+                uint received_len = joybus_receive_bytes(&console->_port, gameId, 10, gc_receive_timeout_us, false);
+                for (uint8_t i = 0; i < received_len; i++) {
+                    printf(" %x", gameId[i]);
+                }
+                printf("\n");
             case GamecubeCommand_RESET:
             case GamecubeCommand_PROBE:
-                // printf("GamecubeCommand_PROBE\n");
                 busy_wait_us(gc_reply_delay);
                 joybus_send_bytes(&console->_port, (uint8_t *)&default_gc_status, sizeof(gc_status_t));
                 break;
             case GamecubeCommand_RECALIBRATE:
             case GamecubeCommand_ORIGIN:
-                // printf("GamecubeCommand_ORIGIN\n");
                 busy_wait_us(gc_reply_delay);
                 joybus_send_bytes(&console->_port, (uint8_t *)&default_gc_origin, sizeof(gc_origin_t));
                 break;
             case GamecubeCommand_POLL:
-                // printf("GamecubeCommand_POLL\n");
                 return;
             default:
+                // printf("COMMAND: 0x%x\n", (GamecubeCommand)received[0]);
                 busy_wait_us(gc_reset_wait_period_us);
                 joybus_port_reset(&console->_port);
         }
@@ -104,7 +106,6 @@ void __no_inline_not_in_flash_func(GamecubeConsole_WaitForPollStart)(GamecubeCon
 }
 
 PollStatus __no_inline_not_in_flash_func(GamecubeConsole_WaitForPollEnd)(GamecubeConsole* console) {
-    // printf("GamecubeConsole_WaitForPollEnd\n");
     uint8_t received[2];
     uint received_len = joybus_receive_bytes(&console->_port, received, 2, gc_receive_timeout_us, true);
 
@@ -119,7 +120,6 @@ PollStatus __no_inline_not_in_flash_func(GamecubeConsole_WaitForPollEnd)(Gamecub
 }
 
 void __no_inline_not_in_flash_func(GamecubeConsole_SendReport)(GamecubeConsole* console, gc_report_t *report) {
-    // printf("GamecubeConsole_SendReport\n");
     while (!time_reached(console->_receive_end)) {
         tight_loop_contents();
     }

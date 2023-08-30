@@ -9,6 +9,7 @@ typedef enum {
     GamecubeCommand_ORIGIN = 0x41,
     GamecubeCommand_RECALIBRATE = 0x42,
     GamecubeCommand_POLL = 0x40,
+    GamecubeCommand_GAME_ID = 0x1D,
 } GamecubeCommand;
 
 typedef struct __attribute__((packed)) {
