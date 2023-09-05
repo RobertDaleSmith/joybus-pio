@@ -16,6 +16,7 @@
 #define gc_reply_delay (gc_incoming_bit_length_us - 1)  // is uint64_t
 
 gc_report_t default_gc_report = DEFAULT_GC_REPORT_INITIALIZER;
+gc_report_t default_gc_kb_report = DEFAULT_GC_KB_REPORT_INITIALIZER;
 gc_origin_t default_gc_origin = DEFAULT_GC_ORIGIN_INITIALIZER;
 gc_status_t default_gc_status = DEFAULT_GC_STATUS_INITIALIZER;
 
@@ -85,6 +86,7 @@ void __no_inline_not_in_flash_func(GamecubeConsole_WaitForPollStart)(GamecubeCon
                     printf(" %x", gameId[i]);
                 }
                 printf("\n");
+                // https://github.com/emukidid/swiss-gc/blob/adedd1fb505ef97e3275243950be3812572ac3ba/cube/swiss/source/nkit.c#L99
                 break;
             case GamecubeCommand_RESET:
             case GamecubeCommand_PROBE:
@@ -104,6 +106,7 @@ void __no_inline_not_in_flash_func(GamecubeConsole_WaitForPollStart)(GamecubeCon
                 busy_wait_us(gc_reply_delay);
                 joybus_send_bytes(&console->_port, (uint8_t *)&default_gc_origin, sizeof(gc_origin_t));
                 break;
+            case GamecubeCommand_KEYBOARD:
             case GamecubeCommand_POLL:
                 return;
             default:
