@@ -16,9 +16,10 @@
 #define gc_reply_delay (gc_incoming_bit_length_us - 1)  // is uint64_t
 
 gc_report_t default_gc_report = DEFAULT_GC_REPORT_INITIALIZER;
-gc_report_t default_gc_kb_report = DEFAULT_GC_KB_REPORT_INITIALIZER;
 gc_origin_t default_gc_origin = DEFAULT_GC_ORIGIN_INITIALIZER;
 gc_status_t default_gc_status = DEFAULT_GC_STATUS_INITIALIZER;
+gc_report_t default_gc_kb_report = DEFAULT_GC_KB_REPORT_INITIALIZER;
+GamecubeMode default_gc_mode = GamecubeMode_3;
 
 // Initialization function
 void GamecubeConsole_init(GamecubeConsole* console, uint pin, PIO pio, int sm, int offset) {
@@ -92,6 +93,7 @@ void __no_inline_not_in_flash_func(GamecubeConsole_WaitForPollStart)(GamecubeCon
             case GamecubeCommand_PROBE:
                 busy_wait_us(gc_reply_delay);
                 joybus_send_bytes(&console->_port, (uint8_t *)&default_gc_status, sizeof(gc_status_t));
+                printf("RESET\n");
                 break;
             case GamecubeCommand_RECALIBRATE:
                 printf("RECALIBRATE: ");
@@ -102,14 +104,16 @@ void __no_inline_not_in_flash_func(GamecubeConsole_WaitForPollStart)(GamecubeCon
                 }
                 printf("\n");
             case GamecubeCommand_ORIGIN:
-                // printf("GamecubeCommand_ORIGIN: 0x%x\n", (GamecubeCommand)received[0]);
                 busy_wait_us(gc_reply_delay);
                 joybus_send_bytes(&console->_port, (uint8_t *)&default_gc_origin, sizeof(gc_origin_t));
                 break;
             case GamecubeCommand_KEYBOARD:
+                if (default_gc_mode == GamecubeMode_KB) return;
+                goto jump_to_default;
             case GamecubeCommand_POLL:
-                return;
+                if (default_gc_mode != GamecubeMode_KB) return;
             default:
+                jump_to_default:
                 printf("COMMAND: 0x%x\n", (GamecubeCommand)received[0]);
                 busy_wait_us(gc_reset_wait_period_us);
                 joybus_port_reset(&console->_port);
@@ -135,8 +139,24 @@ void __no_inline_not_in_flash_func(GamecubeConsole_SendReport)(GamecubeConsole* 
     while (!time_reached(console->_receive_end)) {
         tight_loop_contents();
     }
-    // TODO: Translate report according to reading mode.
+
     joybus_send_bytes(&console->_port, (uint8_t *)report, sizeof(gc_report_t));
+    // printf("RAW: %x, %x, %x, %x, %x, %x, %x, %x\n", report->raw8[0], report->raw8[1], report->raw8[2], report->raw8[3],
+    //                                                 report->raw8[4], report->raw8[5], report->raw8[6], report->raw8[7]);
+}
+
+void __no_inline_not_in_flash_func(GamecubeConsole_SetMode)(GamecubeConsole* console, GamecubeMode mode) {
+    printf("Change Mode: %d\n", mode);
+
+    if (mode != GamecubeMode_KB) {
+        // controller
+        default_gc_mode = GamecubeMode_3;
+        default_gc_status.device = GamecubeDevice_CONTROLLER;
+    } else {
+        // keyboard
+        default_gc_mode = GamecubeMode_KB;
+        default_gc_status.device = GamecubeDevice_KEYBOARD;
+    }
 }
 
 int GamecubeConsole_GetOffset(GamecubeConsole* console) {
