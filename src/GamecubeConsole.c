@@ -9,6 +9,9 @@
 #include <stdio.h>
 #include <stdint.h> // for uint64_t
 
+// Disable debug printf to avoid timing issues with joybus protocol
+#define printf(...)
+
 #define gc_incoming_bit_length_us 5
 #define gc_max_command_bytes 3
 #define gc_receive_timeout_us (gc_incoming_bit_length_us * 10)
