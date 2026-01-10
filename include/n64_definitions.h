@@ -2,15 +2,22 @@
 #define _JOYBUS_N64_DEFINITIONS_H
 
 #include <pico/stdlib.h>
+#include <stdbool.h>
 
-enum class N64Command {
-    PROBE = 0x00,
-    RESET = 0xFF,
-    POLL = 0x01,
-    READ_EXPANSION_BUS = 0x02,
-    WRITE_EXPANSION_BUS = 0x03,
-};
+#ifdef __cplusplus
+extern "C" {
+#endif
 
+// N64 Joybus Commands
+typedef enum {
+    N64Command_PROBE = 0x00,
+    N64Command_RESET = 0xFF,
+    N64Command_POLL = 0x01,
+    N64Command_READ_EXPANSION_BUS = 0x02,
+    N64Command_WRITE_EXPANSION_BUS = 0x03,
+} N64Command;
+
+// N64 Controller Report (4 bytes)
 typedef struct __attribute__((packed)) {
     bool dpad_right : 1;
     bool dpad_left : 1;
@@ -30,39 +37,46 @@ typedef struct __attribute__((packed)) {
     uint8_t reserved1 : 1;
     uint8_t reserved0 : 1;
 
-    uint8_t stick_x;
-    uint8_t stick_y;
+    int8_t stick_x;   // Signed: -128 to +127 (center = 0)
+    int8_t stick_y;   // Signed: -128 to +127 (center = 0)
 } n64_report_t;
 
+// N64 Controller Status (response to PROBE command)
 typedef struct __attribute__((packed)) {
     uint16_t device;
     uint8_t status;
 } n64_status_t;
 
-static constexpr n64_report_t default_n64_report = {
-    .dpad_right = 0,
-    .dpad_left = 0,
-    .dpad_down = 0,
-    .dpad_up = 0,
-    .start = 0,
-    .z = 0,
-    .b = 0,
-    .a = 0,
-    .c_right = 0,
-    .c_left = 0,
-    .c_down = 0,
-    .c_up = 0,
-    .r = 0,
-    .l = 0,
-    .reserved1 = 0,
-    .reserved0 = 0,
-    .stick_x = 0,
-    .stick_y = 0,
-};
+// Default report initializer (all buttons released, stick centered)
+#define DEFAULT_N64_REPORT_INITIALIZER { \
+    .dpad_right = 0, \
+    .dpad_left = 0, \
+    .dpad_down = 0, \
+    .dpad_up = 0, \
+    .start = 0, \
+    .z = 0, \
+    .b = 0, \
+    .a = 0, \
+    .c_right = 0, \
+    .c_left = 0, \
+    .c_down = 0, \
+    .c_up = 0, \
+    .r = 0, \
+    .l = 0, \
+    .reserved1 = 0, \
+    .reserved0 = 0, \
+    .stick_x = 0, \
+    .stick_y = 0, \
+}
 
-static constexpr n64_status_t default_n64_status = {
-    .device = 0x0005,
-    .status = 0x02,
-};
+// Default status (standard controller with no pak)
+#define DEFAULT_N64_STATUS_INITIALIZER { \
+    .device = 0x0005, \
+    .status = 0x02, \
+}
 
+#ifdef __cplusplus
+}
 #endif
+
+#endif // _JOYBUS_N64_DEFINITIONS_H
