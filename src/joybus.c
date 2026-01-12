@@ -2,10 +2,14 @@
 
 #include "joybus.pio.h"
 
+#include <stdio.h>
 #include <hardware/pio.h>
 #include <pico/stdlib.h>
 
 uint joybus_port_init(joybus_port_t *port, uint pin, PIO pio, int sm, int offset) {
+    printf("[joybus] port_init: pio=%d, sm=%d, requested_offset=%d, program_len=%d\n",
+           pio == pio0 ? 0 : 1, sm, offset, joybus_program.length);
+
     if (sm < 0) {
         sm = pio_claim_unused_sm(pio, true);
     } else {
@@ -14,6 +18,11 @@ uint joybus_port_init(joybus_port_t *port, uint pin, PIO pio, int sm, int offset
 
     if (offset < 0) {
         offset = pio_add_program(pio, &joybus_program);
+        printf("[joybus] pio_add_program returned offset=%d\n", offset);
+    } else {
+        // Use specific offset (e.g., to reserve space for other programs)
+        pio_add_program_at_offset(pio, &joybus_program, offset);
+        printf("[joybus] pio_add_program_at_offset used offset=%d\n", offset);
     }
 
     port->pin = pin;
@@ -35,6 +44,9 @@ void joybus_port_terminate(joybus_port_t *port) {
 
 void joybus_port_reset(joybus_port_t *port) {
     joybus_program_receive_init(port->pio, port->sm, port->offset, port->pin, &port->config);
+    // Disable SM after init - will be re-enabled when actually polling
+    // This prevents interference with other SMs on same PIO (e.g., maple_rx)
+    pio_sm_set_enabled(port->pio, port->sm, false);
 }
 
 uint __no_inline_not_in_flash_func(joybus_send_receive)(
@@ -88,17 +100,11 @@ uint __no_inline_not_in_flash_func(joybus_receive_bytes)(
     uint8_t bytes_received;
 
     for (bytes_received = 0; bytes_received < len; bytes_received++) {
-        /* Read timeout in case we don't receive as many bytes as we expected for some reason.
-         * Usually this timeout is only applied after we receive the first byte, because we don't
-         * know how long we'll have to wait for the first byte, but we know how long we should
-         * have to wait between bytes in one message. However, sometimes we might want to read one
-         * byte of a command, do some processing, and then read another byte. In that case, we
-         * would have to also apply the timeout to the first byte of the second read, because it
-         * isn't actually the first byte of the command. */
         if (bytes_received > 0 || first_byte_can_timeout) {
             absolute_time_t timeout_timestamp = make_timeout_time_us(timeout_us);
             while (pio_sm_is_rx_fifo_empty(port->pio, port->sm)) {
                 if (time_reached(timeout_timestamp)) {
+                    pio_sm_set_enabled(port->pio, port->sm, false);
                     return bytes_received;
                 }
             }
@@ -107,6 +113,7 @@ uint __no_inline_not_in_flash_func(joybus_receive_bytes)(
         buf[bytes_received] = joybus_receive_byte(port);
     }
 
+    pio_sm_set_enabled(port->pio, port->sm, false);
     return bytes_received;
 }
 

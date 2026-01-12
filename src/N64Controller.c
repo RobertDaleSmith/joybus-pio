@@ -12,6 +12,7 @@
 #include "n64_definitions.h"
 #include "joybus.h"
 
+#include <stdio.h>
 #include <hardware/pio.h>
 #include <hardware/timer.h>
 #include <pico/stdlib.h>
@@ -113,23 +114,37 @@ void N64Controller_terminate(N64Controller* controller)
 bool __no_inline_not_in_flash_func(N64Controller_Poll)(N64Controller* controller,
                                                         n64_report_t* report, bool rumble)
 {
+    static uint8_t init_fail_count = 0;
+
     // If controller is uninitialized, do probe/origin sequence
     if (!controller->_initialized) {
-        N64Controller_wait_poll_cooldown(controller);
+        // When not initialized, use non-blocking check instead of blocking wait
+        // This prevents starving other tasks (e.g., DC maple bus) when no N64 controller is connected
+        if (!time_reached(controller->_next_poll)) {
+            return false;  // Not time to retry yet, return immediately
+        }
+
+        // Short backoff between init retries (no controller connected)
+        uint32_t backoff_ms = 500;  // 500ms between retries
+        controller->_next_poll = make_timeout_time_ms(backoff_ms);
 
         controller->_initialized = N64Controller_do_init(controller);
         if (!controller->_initialized) {
+            if (init_fail_count < 255) init_fail_count++;
             return false;
         }
+        init_fail_count = 0;  // Reset on success
     }
 
-    N64Controller_wait_poll_cooldown(controller);
+    // Non-blocking cooldown check for regular polling too
+    // This prevents starving other tasks (e.g., DC maple bus)
+    if (!time_reached(controller->_next_poll)) {
+        return false;  // Not time to poll yet, return immediately
+    }
+    controller->_next_poll = make_timeout_time_us(controller->_polling_period_us);
 
-    // Send poll command
-    // Byte 0: POLL command (0x01)
-    // Byte 1: 0x03 (controller pak address high byte)
-    // Byte 2: rumble (0x00 = off, 0x01 = on)
-    uint8_t poll_cmd[] = { N64Command_POLL, 0x03, rumble ? 0x01 : 0x00 };
+    // Send poll command (just 0x01, response is 4 bytes: buttons + stick)
+    uint8_t poll_cmd[] = { N64Command_POLL };
     joybus_send_bytes(&controller->_port, poll_cmd, sizeof(poll_cmd));
 
     // Read and validate report

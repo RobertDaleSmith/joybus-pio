@@ -14,10 +14,17 @@ read_loop:
     wait 1 pin 0                    ; Done reading, so make sure we wait for the line to go high again before restarting the loop
     jmp read_loop
 
+; Stop bit path (placed before write section to allow wrap optimization)
+write_stop_bit:
+    nop [T3 - 6]
+    set pins, 0 [T1 - 1]
+    set pins, 1 [T2 - 2]
+    jmp read
 
 ; 9 bit OSR threshold, no autopull because it interferes with !osre
 public write:
     set pindirs 1           ; Set pin to output
+.wrap_target
 write_loop:
     set pins, 1             ; Set line high for at least 1uS to end pulse
     pull ifempty block      ; Fetch next byte into OSR if we are done with the current one
@@ -32,13 +39,8 @@ write_bit:
 write_bit_fast:
     nop [T3 - 9]
     set pins, 0 [T1 - 1]    ; Pulse always starts with low for 1uS
-    mov pins, x [T2 - 2]    ; Set line according to bit value for 2uS
-    jmp write_loop
-write_stop_bit:
-    nop [T3 - 6]
-    set pins, 0 [T1 - 1]
-    set pins, 1 [T2 - 2]
-    jmp read
+    mov pins, x [T2 - 2]    ; Set line according to bit value for 2uS (wrap auto-jumps to write_loop)
+.wrap
 
 
 % c-sdk {
@@ -46,6 +48,7 @@ write_stop_bit:
 
 static inline pio_sm_config joybus_program_get_config(PIO pio, uint sm, uint offset, uint pin) {
     pio_gpio_init(pio, pin);
+    gpio_pull_up(pin);  // Joybus open-drain requires pull-up for idle-high
 
     pio_sm_config c = joybus_program_get_default_config(offset);
     sm_config_set_out_pins(&c, pin, 1);
