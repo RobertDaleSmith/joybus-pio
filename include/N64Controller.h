@@ -83,6 +83,37 @@ bool N64Controller_IsInitialized(N64Controller* controller);
  */
 const n64_status_t* N64Controller_GetStatus(N64Controller* controller);
 
+/**
+ * @brief Check if a Rumble Pak is detected
+ *
+ * @param controller Pointer to N64Controller context
+ * @return true if pak is present (could be Rumble or Memory pak)
+ */
+bool N64Controller_HasPak(N64Controller* controller);
+
+/**
+ * @brief Initialize the rumble pak
+ *
+ * Must be called before SetRumble will work. Writes initialization
+ * sequence to address 0x8000.
+ *
+ * @param controller Pointer to N64Controller context
+ * @return true if initialization was acknowledged
+ */
+bool N64Controller_InitRumblePak(N64Controller* controller);
+
+/**
+ * @brief Set rumble pak state
+ *
+ * Sends the rumble pak control command to enable or disable rumble.
+ * Only works if a Rumble Pak is inserted and initialized.
+ *
+ * @param controller Pointer to N64Controller context
+ * @param enabled true to enable rumble, false to disable
+ * @return true if command was sent successfully
+ */
+bool N64Controller_SetRumble(N64Controller* controller, bool enabled);
+
 #ifdef __cplusplus
 }
 #endif

@@ -17,6 +17,14 @@ typedef enum {
     N64Command_WRITE_EXPANSION_BUS = 0x03,
 } N64Command;
 
+// N64 Controller Pak / Rumble Pak addresses
+#define N64_RUMBLE_PAK_ADDR     0xC000  // Rumble pak control register
+#define N64_PAK_DATA_SIZE       32      // Controller pak read/write size
+
+// N64 Pak status bits (from probe response status byte)
+#define N64_STATUS_PAK_PRESENT  0x01    // Controller/Rumble pak inserted
+#define N64_STATUS_PAK_CHANGED  0x02    // Pak was removed/inserted
+
 // N64 Controller Report (4 bytes)
 typedef struct __attribute__((packed)) {
     bool dpad_right : 1;
