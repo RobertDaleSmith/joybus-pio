@@ -111,24 +111,52 @@ void N64Controller_terminate(N64Controller* controller)
     joybus_port_terminate(&controller->_port);
 }
 
+// Debug wrapper that can call printf (not flash-pinned)
+static bool N64Controller_do_init_debug(N64Controller* controller)
+{
+    static uint8_t probe_attempt = 0;
+    probe_attempt++;
+
+    if (probe_attempt <= 3) {
+        printf("[N64] do_init: PIO%d SM%d offset %d, pin %d\n",
+               controller->_port.pio == pio0 ? 0 : 1,
+               controller->_port.sm, controller->_port.offset, controller->_port.pin);
+    }
+
+    bool result = N64Controller_do_init(controller);
+
+    if (probe_attempt <= 3) {
+        printf("[N64] do_init: returned %d\n", result);
+    }
+
+    return result;
+}
+
 bool __no_inline_not_in_flash_func(N64Controller_Poll)(N64Controller* controller,
                                                         n64_report_t* report, bool rumble)
 {
     static uint8_t init_fail_count = 0;
+    static bool first_poll = true;
 
     // If controller is uninitialized, do probe/origin sequence
     if (!controller->_initialized) {
         // When not initialized, use non-blocking check instead of blocking wait
         // This prevents starving other tasks (e.g., DC maple bus) when no N64 controller is connected
         if (!time_reached(controller->_next_poll)) {
+            if (first_poll) {
+                printf("[N64] Poll: backoff not reached yet\n");
+                first_poll = false;
+            }
             return false;  // Not time to retry yet, return immediately
         }
+
+        printf("[N64] Poll: attempting probe (fail_count=%d)\n", init_fail_count);
 
         // Short backoff between init retries (no controller connected)
         uint32_t backoff_ms = 500;  // 500ms between retries
         controller->_next_poll = make_timeout_time_ms(backoff_ms);
 
-        controller->_initialized = N64Controller_do_init(controller);
+        controller->_initialized = N64Controller_do_init_debug(controller);
         if (!controller->_initialized) {
             if (init_fail_count < 255) init_fail_count++;
             return false;
@@ -143,8 +171,9 @@ bool __no_inline_not_in_flash_func(N64Controller_Poll)(N64Controller* controller
     }
     controller->_next_poll = make_timeout_time_us(controller->_polling_period_us);
 
-    // Send poll command with rumble (matches C++ version: 0x01, 0x03, rumble)
-    uint8_t poll_cmd[] = { N64Command_POLL, 0x03, rumble };
+    // Send poll command (simple 1-byte format for standard controllers)
+    // Note: 3-byte command { 0x01, 0x03, rumble } is for rumble pak only
+    uint8_t poll_cmd[] = { N64Command_POLL };
     joybus_send_bytes(&controller->_port, poll_cmd, sizeof(poll_cmd));
 
     // Read and validate report

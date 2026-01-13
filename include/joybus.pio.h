@@ -106,4 +106,58 @@ static inline void joybus_program_receive_init(
     pio_sm_set_enabled(pio, sm, true);
 }
 
+// Fully atomic SM init for multi-core safety
+// Unlike pio_sm_init(), this uses hw_clear_bits/hw_set_bits instead of
+// non-atomic read-modify-write on pio->ctrl. This prevents race conditions
+// when multiple cores share the same PIO instance.
+#include <hardware/sync.h>
+#include <hardware/pio_instructions.h>
+
+static inline void joybus_sm_init_atomic(PIO pio, uint sm, uint initial_pc, const pio_sm_config *c) {
+    // Disable SM atomically (pio_sm_set_enabled uses non-atomic read-modify-write!)
+    hw_clear_bits(&pio->ctrl, 1u << sm);
+
+    // Set config (writes to SM-specific registers, safe)
+    pio_sm_set_config(pio, sm, c);
+
+    // Clear FIFOs (uses hw_xor_bits on SM-specific register, safe)
+    pio_sm_clear_fifos(pio, sm);
+
+    // Clear FIFO debug flags (direct write to SM-indexed bits)
+    const uint32_t fdebug_sm_mask =
+        (1u << PIO_FDEBUG_TXOVER_LSB) |
+        (1u << PIO_FDEBUG_RXUNDER_LSB) |
+        (1u << PIO_FDEBUG_TXSTALL_LSB) |
+        (1u << PIO_FDEBUG_RXSTALL_LSB);
+    pio->fdebug = fdebug_sm_mask << sm;
+
+    // Restart SM (uses hw_set_bits, atomic)
+    pio_sm_restart(pio, sm);
+    pio_sm_clkdiv_restart(pio, sm);
+
+    // Set initial PC (writes to SM-specific register)
+    pio_sm_exec(pio, sm, pio_encode_jmp(initial_pc));
+}
+
+static inline void joybus_program_send_init_atomic(
+    PIO pio,
+    uint sm,
+    uint offset,
+    uint pin,
+    pio_sm_config *c
+) {
+    joybus_sm_init_atomic(pio, sm, offset + joybus_offset_write, c);
+    hw_set_bits(&pio->ctrl, 1u << sm);  // Atomic enable
+}
+static inline void joybus_program_receive_init_atomic(
+    PIO pio,
+    uint sm,
+    uint offset,
+    uint pin,
+    pio_sm_config *c
+) {
+    joybus_sm_init_atomic(pio, sm, offset + joybus_offset_read, c);
+    hw_set_bits(&pio->ctrl, 1u << sm);  // Atomic enable
+}
+
 #endif
