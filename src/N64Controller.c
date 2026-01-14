@@ -111,52 +111,24 @@ void N64Controller_terminate(N64Controller* controller)
     joybus_port_terminate(&controller->_port);
 }
 
-// Debug wrapper that can call printf (not flash-pinned)
-static bool N64Controller_do_init_debug(N64Controller* controller)
-{
-    static uint8_t probe_attempt = 0;
-    probe_attempt++;
-
-    if (probe_attempt <= 3) {
-        printf("[N64] do_init: PIO%d SM%d offset %d, pin %d\n",
-               controller->_port.pio == pio0 ? 0 : 1,
-               controller->_port.sm, controller->_port.offset, controller->_port.pin);
-    }
-
-    bool result = N64Controller_do_init(controller);
-
-    if (probe_attempt <= 3) {
-        printf("[N64] do_init: returned %d\n", result);
-    }
-
-    return result;
-}
-
 bool __no_inline_not_in_flash_func(N64Controller_Poll)(N64Controller* controller,
                                                         n64_report_t* report, bool rumble)
 {
     static uint8_t init_fail_count = 0;
-    static bool first_poll = true;
 
     // If controller is uninitialized, do probe/origin sequence
     if (!controller->_initialized) {
         // When not initialized, use non-blocking check instead of blocking wait
         // This prevents starving other tasks (e.g., DC maple bus) when no N64 controller is connected
         if (!time_reached(controller->_next_poll)) {
-            if (first_poll) {
-                printf("[N64] Poll: backoff not reached yet\n");
-                first_poll = false;
-            }
             return false;  // Not time to retry yet, return immediately
         }
-
-        printf("[N64] Poll: attempting probe (fail_count=%d)\n", init_fail_count);
 
         // Short backoff between init retries (no controller connected)
         uint32_t backoff_ms = 500;  // 500ms between retries
         controller->_next_poll = make_timeout_time_ms(backoff_ms);
 
-        controller->_initialized = N64Controller_do_init_debug(controller);
+        controller->_initialized = N64Controller_do_init(controller);
         if (!controller->_initialized) {
             if (init_fail_count < 255) init_fail_count++;
             return false;
@@ -171,8 +143,9 @@ bool __no_inline_not_in_flash_func(N64Controller_Poll)(N64Controller* controller
     }
     controller->_next_poll = make_timeout_time_us(controller->_polling_period_us);
 
-    // Send poll command (simple 1-byte format for standard controllers)
-    // Note: 3-byte command { 0x01, 0x03, rumble } is for rumble pak only
+    // Send poll command (standard N64: just 0x01, returns 4 bytes)
+    // Note: Rumble is controlled separately via N64Controller_SetRumble()
+    (void)rumble;  // Unused - rumble handled by SetRumble writes to expansion bus
     uint8_t poll_cmd[] = { N64Command_POLL };
     joybus_send_bytes(&controller->_port, poll_cmd, sizeof(poll_cmd));
 
@@ -236,16 +209,16 @@ bool N64Controller_InitRumblePak(N64Controller* controller)
 {
     if (!controller->_initialized) return false;
 
-    // Write 32 bytes of 0xFE to address 0x8000 for initialization
+    // Write 32 bytes of 0x80 to address 0x8000 for initialization
     // Address 0x8000 encodes to: 0x80, 0x01
     uint8_t cmd[35];
     cmd[0] = N64Command_WRITE_EXPANSION_BUS;  // 0x03
     cmd[1] = 0x80;  // Address 0x8000 high byte
     cmd[2] = 0x01;  // Address 0x8000 low byte + CRC
 
-    // Fill with 0xFE for initialization
+    // Fill with 0x80 for initialization
     for (int i = 0; i < N64_PAK_DATA_SIZE; i++) {
-        cmd[3 + i] = 0xFE;
+        cmd[3 + i] = 0x80;
     }
 
     joybus_send_bytes(&controller->_port, cmd, sizeof(cmd));
@@ -265,7 +238,9 @@ bool N64Controller_InitRumblePak(N64Controller* controller)
 
 bool N64Controller_SetRumble(N64Controller* controller, bool enabled)
 {
-    if (!controller->_initialized) return false;
+    if (!controller->_initialized) {
+        return false;
+    }
 
     // Build the write command: 0x03 + address (2 bytes) + data (32 bytes) = 35 bytes
     uint8_t cmd[35];
@@ -276,7 +251,7 @@ bool N64Controller_SetRumble(N64Controller* controller, bool enabled)
     cmd[1] = 0xC0;
     cmd[2] = 0x1B;
 
-    // Fill data bytes: 0x01 for rumble on, 0x00 for off
+    // Fill all 32 data bytes: 0x01 = on, 0x00 = off
     uint8_t rumble_byte = enabled ? 0x01 : 0x00;
     for (int i = 0; i < N64_PAK_DATA_SIZE; i++) {
         cmd[3 + i] = rumble_byte;
@@ -286,7 +261,7 @@ bool N64Controller_SetRumble(N64Controller* controller, bool enabled)
     joybus_send_bytes(&controller->_port, cmd, sizeof(cmd));
 
     // Read response (1 byte CRC)
-    uint8_t response;
+    uint8_t response = 0;
     uint received = joybus_receive_bytes(
         &controller->_port,
         &response,

@@ -2,25 +2,10 @@
 
 #include "joybus.pio.h"
 
-#include <stdio.h>
 #include <hardware/pio.h>
-#include <hardware/sync.h>
 #include <pico/stdlib.h>
 
-// Atomic SM enable/disable to avoid race conditions when sharing PIO with other cores
-// The SDK's pio_sm_set_enabled does read-modify-write which races with other cores
-static inline void joybus_sm_set_enabled_atomic(PIO pio, uint sm, bool enabled) {
-    if (enabled) {
-        hw_set_bits(&pio->ctrl, 1u << sm);
-    } else {
-        hw_clear_bits(&pio->ctrl, 1u << sm);
-    }
-}
-
 uint joybus_port_init(joybus_port_t *port, uint pin, PIO pio, int sm, int offset) {
-    printf("[joybus] port_init: pio=%d, sm=%d, requested_offset=%d, program_len=%d\n",
-           pio == pio0 ? 0 : 1, sm, offset, joybus_program.length);
-
     if (sm < 0) {
         sm = pio_claim_unused_sm(pio, true);
     } else {
@@ -29,11 +14,9 @@ uint joybus_port_init(joybus_port_t *port, uint pin, PIO pio, int sm, int offset
 
     if (offset < 0) {
         offset = pio_add_program(pio, &joybus_program);
-        printf("[joybus] pio_add_program returned offset=%d\n", offset);
     } else {
         // Use specific offset (e.g., to reserve space for other programs)
         pio_add_program_at_offset(pio, &joybus_program, offset);
-        printf("[joybus] pio_add_program_at_offset used offset=%d\n", offset);
     }
 
     port->pin = pin;
@@ -48,16 +31,16 @@ uint joybus_port_init(joybus_port_t *port, uint pin, PIO pio, int sm, int offset
 }
 
 void joybus_port_terminate(joybus_port_t *port) {
-    joybus_sm_set_enabled_atomic(port->pio, port->sm, false);
+    pio_sm_set_enabled(port->pio, port->sm, false);
     pio_sm_unclaim(port->pio, port->sm);
     pio_remove_program(port->pio, &joybus_program, port->offset);
 }
 
 void joybus_port_reset(joybus_port_t *port) {
-    joybus_program_receive_init_atomic(port->pio, port->sm, port->offset, port->pin, &port->config);
+    joybus_program_receive_init(port->pio, port->sm, port->offset, port->pin, &port->config);
     // Disable SM after init - will be re-enabled when actually polling
     // This prevents interference with other SMs on same PIO (e.g., maple_rx)
-    joybus_sm_set_enabled_atomic(port->pio, port->sm, false);
+    pio_sm_set_enabled(port->pio, port->sm, false);
 }
 
 uint __no_inline_not_in_flash_func(joybus_send_receive)(
@@ -89,7 +72,7 @@ void __no_inline_not_in_flash_func(joybus_send_bytes)(
         tight_loop_contents();
     }
 
-    joybus_program_send_init_atomic(port->pio, port->sm, port->offset, port->pin, &port->config);
+    joybus_program_send_init(port->pio, port->sm, port->offset, port->pin, &port->config);
 
     for (int i = 0; i < len; i++) {
         joybus_send_byte(port, bytes[i], i == len - 1);
@@ -115,7 +98,7 @@ uint __no_inline_not_in_flash_func(joybus_receive_bytes)(
             absolute_time_t timeout_timestamp = make_timeout_time_us(timeout_us);
             while (pio_sm_is_rx_fifo_empty(port->pio, port->sm)) {
                 if (time_reached(timeout_timestamp)) {
-                    joybus_sm_set_enabled_atomic(port->pio, port->sm, false);
+                    pio_sm_set_enabled(port->pio, port->sm, false);
                     return bytes_received;
                 }
             }
@@ -124,7 +107,7 @@ uint __no_inline_not_in_flash_func(joybus_receive_bytes)(
         buf[bytes_received] = joybus_receive_byte(port);
     }
 
-    joybus_sm_set_enabled_atomic(port->pio, port->sm, false);
+    pio_sm_set_enabled(port->pio, port->sm, false);
     return bytes_received;
 }
 
