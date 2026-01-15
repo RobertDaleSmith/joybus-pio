@@ -21,9 +21,9 @@
 
 // Timing constants
 #define N64_INCOMING_BIT_LENGTH_US 4
-// Give 5 bytes of leniency for controller processing time,
-// plus another byte because timeout starts as we begin sending
-#define N64_RECEIVE_TIMEOUT_US (N64_INCOMING_BIT_LENGTH_US * 10 * 6)
+// Generous timeout to handle PIO contention when sharing PIO1 with maple_rx
+// Normal receive is ~130μs, but PIO contention can cause delays
+#define N64_RECEIVE_TIMEOUT_US 500  // 500μs (was 240μs)
 
 // Default status for initialization
 static n64_status_t default_n64_status = DEFAULT_N64_STATUS_INITIALIZER;
@@ -124,8 +124,10 @@ bool __no_inline_not_in_flash_func(N64Controller_Poll)(N64Controller* controller
             return false;  // Not time to retry yet, return immediately
         }
 
-        // Short backoff between init retries (no controller connected)
-        uint32_t backoff_ms = 500;  // 500ms between retries
+        // Backoff: short for reconnection attempts, longer if no controller
+        // First 5 retries: 16ms (quick reconnect after brief glitch)
+        // After that: 500ms (controller likely not connected)
+        uint32_t backoff_ms = (init_fail_count < 5) ? 16 : 500;
         controller->_next_poll = make_timeout_time_ms(backoff_ms);
 
         controller->_initialized = N64Controller_do_init(controller);
