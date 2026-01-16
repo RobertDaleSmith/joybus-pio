@@ -91,6 +91,9 @@ uint __no_inline_not_in_flash_func(joybus_receive_bytes)(
     uint64_t timeout_us,
     bool first_byte_can_timeout
 ) {
+    // Ensure SM is enabled for receiving (may have been disabled after previous operation)
+    pio_sm_set_enabled(port->pio, port->sm, true);
+
     uint8_t bytes_received;
 
     for (bytes_received = 0; bytes_received < len; bytes_received++) {
