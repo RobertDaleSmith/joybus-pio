@@ -13,6 +13,7 @@
 #include <pico/time.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <string.h>
 
 // Disable debug printf to avoid timing issues with joybus protocol
 #define printf(...)
