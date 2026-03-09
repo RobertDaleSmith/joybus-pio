@@ -77,12 +77,13 @@ typedef struct __attribute__((packed)) {
     .stick_y = 0, \
 }
 
-// Default status (standard controller, pak changed)
-// status=0x02: triggers console pak identification. Console polls controller
-// and periodically reads pak. With status=0x00, console ignores controller entirely.
+// Default status (standard controller, pak present)
+// status bit 0 (0x01): accessory/pak is connected
+// status bit 1 (0x02): address CRC was reset (pak changed since last check)
+// 0x01 = pak present, stable. Console will read pak to identify type.
 #define DEFAULT_N64_STATUS_INITIALIZER { \
     .device = 0x0005, \
-    .status = 0x02, \
+    .status = 0x01, \
 }
 
 #ifdef __cplusplus
