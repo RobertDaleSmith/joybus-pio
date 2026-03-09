@@ -45,7 +45,9 @@ extern n64_report_t n64_report;  // Live report updated by Core 1's update_outpu
 n64_status_t default_n64_status = DEFAULT_N64_STATUS_INITIALIZER;
 
 // CRC-8 lookup table for N64 pak operations (polynomial 0x85)
-static const uint8_t pak_crc_table[256] = {
+// Placed in RAM (__not_in_flash) because Core 1 accesses it from WaitForPoll,
+// and Core 0 may lock flash during BT bonding writes (flash_safe_execute).
+static const uint8_t __not_in_flash("n64_pak") pak_crc_table[256] = {
     0x00, 0x85, 0x8F, 0x0A, 0x9B, 0x1E, 0x14, 0x91,
     0xB3, 0x36, 0x3C, 0xB9, 0x28, 0xAD, 0xA7, 0x22,
     0xE3, 0x66, 0x6C, 0xE9, 0x78, 0xFD, 0xF7, 0x72,
@@ -223,6 +225,10 @@ bool __no_inline_not_in_flash_func(N64Console_Detect)(N64Console_t* console) {
 // On RP2350 (Pico 2 W), Core 0's CYW43 driver periodically locks flash for
 // BT bonding storage, making flash-resident functions (busy_wait_us, pio_sm_init)
 // inaccessible to Core 1. All operations use RAM-only helpers above.
+//
+// Also serves as initial detection: sets n64_console_active on first received
+// command. This eliminates the need for a separate Detect phase that uses
+// flash-resident functions and can miss probes during BT init.
 bool __no_inline_not_in_flash_func(N64Console_WaitForPoll)(N64Console_t* console) {
     uint8_t received[1];
 
@@ -232,6 +238,12 @@ bool __no_inline_not_in_flash_func(N64Console_WaitForPoll)(N64Console_t* console
         n64_diag_rx_count++;
         n64_diag_last_rx = received[0];
         n64_diag_phase = 1;
+
+        // Signal console detection on first valid receive
+        extern volatile bool n64_console_active;
+        if (!n64_console_active) {
+            n64_console_active = true;
+        }
 
         switch ((N64Command)received[0]) {
             case N64Command_RESET:
