@@ -36,56 +36,50 @@ volatile uint8_t n64_diag_last_cmd = 0;
 volatile uint32_t n64_diag_probe_count = 0;
 volatile uint32_t n64_diag_rx_count = 0;
 volatile uint32_t n64_diag_pak_read_count = 0;
+volatile uint32_t n64_diag_pak_write_count = 0;
+volatile uint16_t n64_diag_last_read_addr = 0;
+volatile uint16_t n64_diag_last_write_addr = 0;
+volatile uint8_t n64_diag_write_crc = 0;        // CRC we responded with for last WRITE
+volatile uint8_t n64_diag_write_data[4] = {0};   // First 4 data bytes of last WRITE
+volatile uint16_t n64_diag_first_write_addr = 0xFFFF;  // First write address seen
+volatile uint8_t n64_diag_first_write_crc = 0;         // CRC for first write
+volatile uint8_t n64_diag_first_write_data[4] = {0};   // First 4 data bytes of first write
+volatile uint16_t n64_diag_first_read_addr = 0xFFFF;   // First read address seen
 volatile uint8_t n64_diag_last_rx = 0xFF;   // Last received byte (always stored)
 volatile uint8_t n64_diag_phase = 0;        // 0=waiting, 1=got byte, 2=sending, 3=sent
+volatile uint32_t n64_diag_listen_time_us = 0;  // μs from boot when Core 1 starts listening
+volatile uint32_t n64_diag_first_rx_us = 0;     // μs from boot when first byte received
+
+// Boot sequence capture: first 20 command bytes received
+#define N64_BOOT_CAPTURE_SIZE 20
+volatile uint8_t n64_boot_cmds[N64_BOOT_CAPTURE_SIZE];
+volatile uint8_t n64_boot_cmd_count = 0;
 
 // Default instances
 n64_report_t default_n64_report = DEFAULT_N64_REPORT_INITIALIZER;
 extern n64_report_t n64_report;  // Live report updated by Core 1's update_output()
 n64_status_t default_n64_status = DEFAULT_N64_STATUS_INITIALIZER;
 
-// CRC-8 lookup table for N64 pak operations (polynomial 0x85)
-// Placed in RAM (__not_in_flash) because Core 1 accesses it from WaitForPoll,
-// and Core 0 may lock flash during BT bonding writes (flash_safe_execute).
-static const uint8_t __not_in_flash("n64_pak") pak_crc_table[256] = {
-    0x00, 0x85, 0x8F, 0x0A, 0x9B, 0x1E, 0x14, 0x91,
-    0xB3, 0x36, 0x3C, 0xB9, 0x28, 0xAD, 0xA7, 0x22,
-    0xE3, 0x66, 0x6C, 0xE9, 0x78, 0xFD, 0xF7, 0x72,
-    0x50, 0xD5, 0xDF, 0x5A, 0xCB, 0x4E, 0x44, 0xC1,
-    0x43, 0xC6, 0xCC, 0x49, 0xD8, 0x5D, 0x57, 0xD2,
-    0xF0, 0x75, 0x7F, 0xFA, 0x6B, 0xEE, 0xE4, 0x61,
-    0xA0, 0x25, 0x2F, 0xAA, 0x3B, 0xBE, 0xB4, 0x31,
-    0x13, 0x96, 0x9C, 0x19, 0x88, 0x0D, 0x07, 0x82,
-    0x86, 0x03, 0x09, 0x8C, 0x1D, 0x98, 0x92, 0x17,
-    0x35, 0xB0, 0xBA, 0x3F, 0xAE, 0x2B, 0x21, 0xA4,
-    0x65, 0xE0, 0xEA, 0x6F, 0xFE, 0x7B, 0x71, 0xF4,
-    0xD6, 0x53, 0x59, 0xDC, 0x4D, 0xC8, 0xC2, 0x47,
-    0xC5, 0x40, 0x4A, 0xCF, 0x5E, 0xDB, 0xD1, 0x54,
-    0x76, 0xF3, 0xF9, 0x7C, 0xED, 0x68, 0x62, 0xE7,
-    0x26, 0xA3, 0xA9, 0x2C, 0xBD, 0x38, 0x32, 0xB7,
-    0x95, 0x10, 0x1A, 0x9F, 0x0E, 0x8B, 0x81, 0x04,
-    0x89, 0x0C, 0x06, 0x83, 0x12, 0x97, 0x9D, 0x18,
-    0x3A, 0xBF, 0xB5, 0x30, 0xA1, 0x24, 0x2E, 0xAB,
-    0x6A, 0xEF, 0xE5, 0x60, 0xF1, 0x74, 0x7E, 0xFB,
-    0xD9, 0x5C, 0x56, 0xD3, 0x42, 0xC7, 0xCD, 0x48,
-    0xCA, 0x4F, 0x45, 0xC0, 0x51, 0xD4, 0xDE, 0x5B,
-    0x79, 0xFC, 0xF6, 0x73, 0xE2, 0x67, 0x6D, 0xE8,
-    0x29, 0xAC, 0xA6, 0x23, 0xB2, 0x37, 0x3D, 0xB8,
-    0x9A, 0x1F, 0x15, 0x90, 0x01, 0x84, 0x8E, 0x0B,
-    0x0F, 0x8A, 0x80, 0x05, 0x94, 0x11, 0x1B, 0x9E,
-    0xBC, 0x39, 0x33, 0xB6, 0x27, 0xA2, 0xA8, 0x2D,
-    0xEC, 0x69, 0x63, 0xE6, 0x77, 0xF2, 0xF8, 0x7D,
-    0x5F, 0xDA, 0xD0, 0x55, 0xC4, 0x41, 0x4B, 0xCE,
-    0x4C, 0xC9, 0xC3, 0x46, 0xD7, 0x52, 0x58, 0xDD,
-    0xFF, 0x7A, 0x70, 0xF5, 0x64, 0xE1, 0xEB, 0x6E,
-    0xAF, 0x2A, 0x20, 0xA5, 0x34, 0xB1, 0xBB, 0x3E,
-    0x1C, 0x99, 0x93, 0x16, 0x87, 0x02, 0x08, 0x8D,
-};
-
+// N64 controller pak data CRC (polynomial 0x85).
+// Unlike standard CRC-8, N64 shifts data bits INTO the CRC register (not XOR),
+// then finalizes with 8 zero-bit shifts. This is the algorithm used by the PIF
+// to verify pak READ/WRITE responses.
+// Placed in RAM for Core 1 safety (flash may be locked by CYW43 on RP2350).
 static uint8_t __no_inline_not_in_flash_func(pak_calc_crc)(const uint8_t *data, uint8_t len) {
     uint8_t crc = 0;
     for (uint8_t i = 0; i < len; i++) {
-        crc = pak_crc_table[crc ^ data[i]];
+        for (int j = 7; j >= 0; j--) {
+            uint8_t xor_tap = (crc & 0x80) ? 0x85 : 0x00;
+            crc <<= 1;
+            if (data[i] & (1 << j)) crc |= 1;
+            crc ^= xor_tap;
+        }
+    }
+    // Finalization: process 8 zero bits
+    for (int j = 7; j >= 0; j--) {
+        uint8_t xor_tap = (crc & 0x80) ? 0x85 : 0x00;
+        crc <<= 1;
+        crc ^= xor_tap;
     }
     return crc;
 }
@@ -112,20 +106,50 @@ static void __no_inline_not_in_flash_func(n64_delay_us)(uint32_t us) {
     }
 }
 
-// Send bytes without calling pio_sm_init (which is in flash).
-// All PIO functions used here are static inline (register writes).
+// Exact RAM replica of pio_sm_init + joybus_send_bytes.
+// All functions called here are static inline (register writes only).
+// Matches pio_sm_init step-for-step: disable, config, clear, fdebug, restart,
+// clkdiv_restart, jmp, addr sync. Then enable and send like joybus_send_bytes.
 static void __no_inline_not_in_flash_func(n64_send_bytes)(
     joybus_port_t *port, uint8_t *bytes, uint len
 ) {
     while (!gpio_get(port->pin)) { tight_loop_contents(); }
+
+    // --- Exact pio_sm_init equivalent (all inline, flash-safe) ---
     pio_sm_set_enabled(port->pio, port->sm, false);
+    pio_sm_set_config(port->pio, port->sm, &port->config);
     pio_sm_clear_fifos(port->pio, port->sm);
+    // Clear FDEBUG sticky flags (same as pio_sm_init)
+    const uint32_t fdebug_sm_mask =
+        (1u << PIO_FDEBUG_TXOVER_LSB) |
+        (1u << PIO_FDEBUG_RXUNDER_LSB) |
+        (1u << PIO_FDEBUG_TXSTALL_LSB) |
+        (1u << PIO_FDEBUG_RXSTALL_LSB);
+    port->pio->fdebug = fdebug_sm_mask << port->sm;
     pio_sm_restart(port->pio, port->sm);
+    pio_sm_clkdiv_restart(port->pio, port->sm);
     pio_sm_exec(port->pio, port->sm,
                 pio_encode_jmp(port->offset + joybus_offset_write));
+    (void)port->pio->sm[port->sm].addr;  // sync: ensure JMP takes effect
+
+    // --- Now send (same as joybus_send_bytes after pio_sm_init) ---
     pio_sm_set_enabled(port->pio, port->sm, true);
     for (uint i = 0; i < len; i++) {
         joybus_send_byte(port, bytes[i], i == len - 1);
+    }
+
+    // Wait for PIO to finish transmitting before returning.
+    // joybus_send_byte only puts data in the TX FIFO; the PIO sends asynchronously.
+    // If we return early, the caller's gpio_get() check can see the PIO driving
+    // the line LOW (during a joybus bit), misinterpret it as "N64 off", and reset
+    // the SM mid-send — destroying the response.
+    while (!pio_sm_is_tx_fifo_empty(port->pio, port->sm)) {
+        tight_loop_contents();
+    }
+    // TX FIFO is empty but PIO is still sending the last byte + stop bit.
+    // Wait for PIO to transition back to read mode (set pindirs 0 = input).
+    while (gpio_is_dir_out(port->pin)) {
+        tight_loop_contents();
     }
 }
 
@@ -172,7 +196,14 @@ bool __no_inline_not_in_flash_func(N64Console_Detect)(N64Console_t* console) {
         }
 
         switch ((N64Command)received[0]) {
-            case N64Command_RESET:
+            case N64Command_RESET: {
+                n64_status_t reset_status = default_n64_status;
+                reset_status.status |= N64_STATUS_PAK_CHANGED;
+                busy_wait_us(n64_reply_delay);
+                joybus_send_bytes(&console->_port, (uint8_t *)&reset_status, sizeof(n64_status_t));
+                attempts = 0;
+                break;
+            }
             case N64Command_PROBE:
                 busy_wait_us(n64_reply_delay);
                 joybus_send_bytes(&console->_port, (uint8_t *)&default_n64_status, sizeof(n64_status_t));
@@ -232,19 +263,65 @@ bool __no_inline_not_in_flash_func(N64Console_Detect)(N64Console_t* console) {
 bool __no_inline_not_in_flash_func(N64Console_WaitForPoll)(N64Console_t* console) {
     uint8_t received[1];
 
+    // Record when we start listening (μs since boot)
+    if (n64_diag_listen_time_us == 0) {
+        n64_diag_listen_time_us = timer_hw->timelr;
+    }
+
     while (true) {
         n64_diag_phase = 0;
-        joybus_receive_bytes(&console->_port, received, 1, n64_receive_timeout_us, false);
-        n64_diag_rx_count++;
-        n64_diag_last_rx = received[0];
+
+        // Receive with timeout so we can detect N64 power-off/on.
+        // Without timeout, pio_sm_get_blocking blocks forever when N64 is off,
+        // and we never reach the line-state check to reset phantom ISR bits.
+        // 50ms is long enough to avoid unnecessary resets during normal 60Hz polling
+        // (~16.7ms between polls) but short enough to detect power cycles promptly.
+        uint bytes = joybus_receive_bytes(&console->_port, received, 1, 50000, true);
+
+        if (bytes == 0) {
+            // Timeout — no command received. Check if N64 is off (line low).
+            // When N64 is off, the joybus line drops low (no pull-up power).
+            // PIO in read mode sees this as data, injecting phantom bits into ISR.
+            if (!gpio_get(console->_port.pin)) {
+                // N64 is off — wait for power-on
+                while (!gpio_get(console->_port.pin)) {
+                    tight_loop_contents();
+                }
+                // Line just went high — power is ramping up.
+                // Wait briefly for line to stabilize.
+                n64_delay_us(100);
+            }
+            // Reset SM to clear any phantom ISR bits from power-off/bounce
+            n64_reset_to_receive(&console->_port);
+            continue;
+        }
         n64_diag_phase = 1;
 
-        // Signal console detection on first valid receive
-        extern volatile bool n64_console_active;
-        if (!n64_console_active) {
-            n64_console_active = true;
+        // Record first receive timestamp
+        if (n64_diag_first_rx_us == 0) {
+            n64_diag_first_rx_us = timer_hw->timelr;
         }
 
+        // On RESET or PROBE, clear boot capture for fresh cold-boot trace
+        if ((N64Command)received[0] == N64Command_RESET ||
+            (N64Command)received[0] == N64Command_PROBE) {
+            n64_boot_cmd_count = 0;
+            n64_diag_probe_count = 0;
+            n64_diag_poll_count = 0;
+            n64_diag_pak_read_count = 0;
+            n64_diag_pak_write_count = 0;
+            n64_diag_rx_count = 0;
+            n64_diag_first_write_addr = 0xFFFF;
+            n64_diag_first_read_addr = 0xFFFF;
+        }
+
+        // Capture boot sequence
+        if (n64_boot_cmd_count < N64_BOOT_CAPTURE_SIZE) {
+            n64_boot_cmds[n64_boot_cmd_count++] = received[0];
+        }
+
+        // Respond with reply delay matching real controller timing (~4μs after stop bit).
+        // n64_send_bytes waits for line-high first, then n64_delay_us adds the gap.
         switch ((N64Command)received[0]) {
             case N64Command_RESET:
             case N64Command_PROBE:
@@ -263,12 +340,10 @@ bool __no_inline_not_in_flash_func(N64Console_WaitForPoll)(N64Console_t* console
                 uint8_t addr_bytes[2];
                 joybus_receive_bytes(&console->_port, addr_bytes, 2, n64_receive_timeout_us, true);
                 uint16_t addr = ((uint16_t)addr_bytes[0] << 8) | addr_bytes[1];
-                uint16_t real_addr = addr & 0xFFE0;  // mask off 5-bit address CRC
+                uint16_t real_addr = addr & 0xFFE0;
 
-                // Select response based on address:
-                // 0x8000: pak identification — return 0x80-filled (rumble pak signature)
-                // 0xC000: rumble motor status — return 0x00-filled
-                // Other: return 0x00-filled
+                // 0x8000: rumble pak signature (0x80-filled)
+                // Other: zeros
                 uint8_t *response = (real_addr == RUMBLE_PAK_ID_ADDR)
                     ? pak_response_rumble_id
                     : pak_response_zeros;
@@ -276,6 +351,8 @@ bool __no_inline_not_in_flash_func(N64Console_WaitForPoll)(N64Console_t* console
                 n64_delay_us(n64_reply_delay);
                 n64_send_bytes(&console->_port, response, N64_PAK_DATA_SIZE + 1);
                 n64_diag_pak_read_count++;
+                if (n64_diag_first_read_addr == 0xFFFF) n64_diag_first_read_addr = real_addr;
+                n64_diag_last_read_addr = real_addr;
                 break;
             }
 
@@ -283,15 +360,30 @@ bool __no_inline_not_in_flash_func(N64Console_WaitForPoll)(N64Console_t* console
                 uint8_t buf[2 + N64_PAK_DATA_SIZE];
                 joybus_receive_bytes(&console->_port, buf, sizeof(buf), n64_receive_timeout_us, true);
 
-                // Calculate CRC of the 32 data bytes written by console
                 uint8_t crc = pak_calc_crc(&buf[2], N64_PAK_DATA_SIZE);
 
                 n64_delay_us(n64_reply_delay);
                 n64_send_bytes(&console->_port, &crc, 1);
 
-                // Check for rumble pak write (address 0xC000)
                 uint16_t addr = ((uint16_t)buf[0] << 8) | buf[1];
-                if ((addr & 0xFFE0) == N64_RUMBLE_PAK_ADDR) {
+                uint16_t write_addr = addr & 0xFFE0;
+                n64_diag_last_write_addr = write_addr;
+                n64_diag_write_crc = crc;
+                n64_diag_write_data[0] = buf[2];
+                n64_diag_write_data[1] = buf[3];
+                n64_diag_write_data[2] = buf[4];
+                n64_diag_write_data[3] = buf[5];
+                if (n64_diag_first_write_addr == 0xFFFF) {
+                    n64_diag_first_write_addr = write_addr;
+                    n64_diag_first_write_crc = crc;
+                    n64_diag_first_write_data[0] = buf[2];
+                    n64_diag_first_write_data[1] = buf[3];
+                    n64_diag_first_write_data[2] = buf[4];
+                    n64_diag_first_write_data[3] = buf[5];
+                }
+                n64_diag_pak_write_count++;
+
+                if (write_addr == N64_RUMBLE_PAK_ADDR) {
                     uint8_t rumble = 0;
                     for (int i = 2; i < 2 + N64_PAK_DATA_SIZE; i++) {
                         if (buf[i]) { rumble = 255; break; }
@@ -305,6 +397,16 @@ bool __no_inline_not_in_flash_func(N64Console_WaitForPoll)(N64Console_t* console
                 n64_diag_last_cmd = received[0];
                 n64_delay_us(n64_reset_wait_period_us);
                 n64_reset_to_receive(&console->_port);
+        }
+
+        // Update diagnostics AFTER response (not timing-critical)
+        n64_diag_rx_count++;
+        n64_diag_last_rx = received[0];
+
+        // Signal console detection on first valid receive
+        extern volatile bool n64_console_active;
+        if (!n64_console_active) {
+            n64_console_active = true;
         }
     }
 }
