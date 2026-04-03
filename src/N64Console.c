@@ -323,18 +323,32 @@ bool __no_inline_not_in_flash_func(N64Console_WaitForPoll)(N64Console_t* console
         // Respond with reply delay matching real controller timing (~4μs after stop bit).
         // n64_send_bytes waits for line-high first, then n64_delay_us adds the gap.
         switch ((N64Command)received[0]) {
-            case N64Command_RESET:
+            case N64Command_RESET: {
+                // RESET response must set PAK_CHANGED bit (real controller behavior)
+                n64_status_t reset_status = default_n64_status;
+                reset_status.status |= N64_STATUS_PAK_CHANGED;
+                n64_delay_us(n64_reply_delay);
+                n64_send_bytes(&console->_port, (uint8_t *)&reset_status, sizeof(n64_status_t));
+                n64_diag_probe_count++;
+                break;
+            }
             case N64Command_PROBE:
                 n64_delay_us(n64_reply_delay);
                 n64_send_bytes(&console->_port, (uint8_t *)&default_n64_status, sizeof(n64_status_t));
                 n64_diag_probe_count++;
                 break;
 
-            case N64Command_POLL:
+            case N64Command_POLL: {
+                // Set console active before sending — POLL may be the first
+                // command seen (e.g., Everdrive skips PROBE after game boot)
+                extern volatile bool n64_console_active;
+                if (!n64_console_active) n64_console_active = true;
+
                 n64_delay_us(n64_reply_delay);
                 n64_send_bytes(&console->_port, (uint8_t *)&n64_report, sizeof(n64_report_t));
                 n64_diag_poll_count++;
                 return false;
+            }
 
             case N64Command_READ_EXPANSION_BUS: {
                 uint8_t addr_bytes[2];
