@@ -50,6 +50,14 @@ volatile uint8_t n64_diag_phase = 0;        // 0=waiting, 1=got byte, 2=sending,
 volatile uint32_t n64_diag_listen_time_us = 0;  // μs from boot when Core 1 starts listening
 volatile uint32_t n64_diag_first_rx_us = 0;     // μs from boot when first byte received
 
+// Persistent counters (never reset — survives probe resets)
+volatile uint32_t n64_diag_total_reads = 0;
+volatile uint32_t n64_diag_total_writes = 0;
+volatile uint32_t n64_diag_total_probes = 0;
+volatile uint32_t n64_diag_total_unknown = 0;
+volatile uint32_t n64_diag_read_addr_fail = 0;  // Failed to receive address bytes on READ
+volatile uint32_t n64_diag_write_buf_fail = 0;  // Failed to receive data on WRITE
+
 // Boot sequence capture: first 20 command bytes received
 #define N64_BOOT_CAPTURE_SIZE 20
 volatile uint8_t n64_boot_cmds[N64_BOOT_CAPTURE_SIZE];
@@ -84,13 +92,15 @@ static uint8_t __no_inline_not_in_flash_func(pak_calc_crc)(const uint8_t *data, 
     return crc;
 }
 
-// Rumble pak identification: reads to 0x8000 return 0x80-filled data
-// This is how the N64 console identifies a rumble pak vs controller pak
-#define RUMBLE_PAK_ID_ADDR  0x8000
+// Pak type identification at address 0x8000:
+//   0x80-filled = Rumble Pak
+//   0x00-filled = Controller Pak (memory)
+//   0x84-filled = Transfer Pak
+#define PAK_ID_ADDR  0x8000
 
 // Pre-built pak read responses (32 data + 1 CRC)
 static uint8_t pak_response_rumble_id[N64_PAK_DATA_SIZE + 1];  // 0x80-filled + CRC (rumble pak ID)
-static uint8_t pak_response_zeros[N64_PAK_DATA_SIZE + 1];      // 0x00-filled + CRC (rumble motor off)
+static uint8_t pak_response_zeros[N64_PAK_DATA_SIZE + 1];      // 0x00-filled + CRC (empty data)
 
 // ============================================================================
 // RAM-only helpers for Core 1 (RP2350: flash may be locked by Core 0's CYW43)
@@ -168,13 +178,10 @@ void N64Console_init(N64Console_t* console, uint pin, PIO pio, int sm, int offse
     joybus_port_init(&console->_port, pin, pio, sm, offset);
 
     // Pre-build rumble pak ID response: 0x80-filled + CRC
-    // N64 console reads address 0x8000 to identify pak type.
-    // Rumble pak returns 0x80 for all 32 bytes.
     memset(pak_response_rumble_id, 0x80, N64_PAK_DATA_SIZE);
     pak_response_rumble_id[N64_PAK_DATA_SIZE] = pak_calc_crc(pak_response_rumble_id, N64_PAK_DATA_SIZE);
 
     // Pre-build zero response: 0x00-filled + CRC
-    // Used for rumble motor status reads (0xC000) and other addresses.
     memset(pak_response_zeros, 0x00, N64_PAK_DATA_SIZE);
     pak_response_zeros[N64_PAK_DATA_SIZE] = pak_calc_crc(pak_response_zeros, N64_PAK_DATA_SIZE);
 }
@@ -221,11 +228,11 @@ bool __no_inline_not_in_flash_func(N64Console_Detect)(N64Console_t* console) {
                 joybus_receive_bytes(&console->_port, addr_bytes, 2, n64_receive_timeout_us, true);
                 uint16_t read_addr = ((uint16_t)addr_bytes[0] << 8) | addr_bytes[1];
                 uint16_t real_addr = read_addr & 0xFFE0;
-                uint8_t *response = (real_addr == RUMBLE_PAK_ID_ADDR)
+                uint8_t *det_response = (real_addr == PAK_ID_ADDR)
                     ? pak_response_rumble_id
                     : pak_response_zeros;
                 busy_wait_us(n64_reply_delay);
-                joybus_send_bytes(&console->_port, response, N64_PAK_DATA_SIZE + 1);
+                joybus_send_bytes(&console->_port, det_response, N64_PAK_DATA_SIZE + 1);
                 attempts = 0;
                 break;
             }
@@ -330,12 +337,14 @@ bool __no_inline_not_in_flash_func(N64Console_WaitForPoll)(N64Console_t* console
                 n64_delay_us(n64_reply_delay);
                 n64_send_bytes(&console->_port, (uint8_t *)&reset_status, sizeof(n64_status_t));
                 n64_diag_probe_count++;
+                n64_diag_total_probes++;
                 break;
             }
             case N64Command_PROBE:
                 n64_delay_us(n64_reply_delay);
                 n64_send_bytes(&console->_port, (uint8_t *)&default_n64_status, sizeof(n64_status_t));
                 n64_diag_probe_count++;
+                n64_diag_total_probes++;
                 break;
 
             case N64Command_POLL: {
@@ -352,19 +361,21 @@ bool __no_inline_not_in_flash_func(N64Console_WaitForPoll)(N64Console_t* console
 
             case N64Command_READ_EXPANSION_BUS: {
                 uint8_t addr_bytes[2];
-                joybus_receive_bytes(&console->_port, addr_bytes, 2, n64_receive_timeout_us, true);
+                uint got_addr = joybus_receive_bytes(&console->_port, addr_bytes, 2, n64_receive_timeout_us, true);
+                if (got_addr < 2) { n64_diag_read_addr_fail++; break; }
                 uint16_t addr = ((uint16_t)addr_bytes[0] << 8) | addr_bytes[1];
                 uint16_t real_addr = addr & 0xFFE0;
 
                 // 0x8000: rumble pak signature (0x80-filled)
                 // Other: zeros
-                uint8_t *response = (real_addr == RUMBLE_PAK_ID_ADDR)
+                uint8_t *response = (real_addr == PAK_ID_ADDR)
                     ? pak_response_rumble_id
                     : pak_response_zeros;
 
                 n64_delay_us(n64_reply_delay);
                 n64_send_bytes(&console->_port, response, N64_PAK_DATA_SIZE + 1);
                 n64_diag_pak_read_count++;
+                n64_diag_total_reads++;
                 if (n64_diag_first_read_addr == 0xFFFF) n64_diag_first_read_addr = real_addr;
                 n64_diag_last_read_addr = real_addr;
                 break;
@@ -372,7 +383,8 @@ bool __no_inline_not_in_flash_func(N64Console_WaitForPoll)(N64Console_t* console
 
             case N64Command_WRITE_EXPANSION_BUS: {
                 uint8_t buf[2 + N64_PAK_DATA_SIZE];
-                joybus_receive_bytes(&console->_port, buf, sizeof(buf), n64_receive_timeout_us, true);
+                uint got_wr = joybus_receive_bytes(&console->_port, buf, sizeof(buf), n64_receive_timeout_us, true);
+                if (got_wr < sizeof(buf)) { n64_diag_write_buf_fail++; break; }
 
                 uint8_t crc = pak_calc_crc(&buf[2], N64_PAK_DATA_SIZE);
 
@@ -396,6 +408,7 @@ bool __no_inline_not_in_flash_func(N64Console_WaitForPoll)(N64Console_t* console
                     n64_diag_first_write_data[3] = buf[5];
                 }
                 n64_diag_pak_write_count++;
+                n64_diag_total_writes++;
 
                 if (write_addr == N64_RUMBLE_PAK_ADDR) {
                     uint8_t rumble = 0;
@@ -409,6 +422,7 @@ bool __no_inline_not_in_flash_func(N64Console_WaitForPoll)(N64Console_t* console
 
             default:
                 n64_diag_last_cmd = received[0];
+                n64_diag_total_unknown++;
                 n64_delay_us(n64_reset_wait_period_us);
                 n64_reset_to_receive(&console->_port);
         }
