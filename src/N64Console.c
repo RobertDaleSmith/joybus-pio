@@ -58,9 +58,14 @@ volatile uint32_t n64_diag_total_unknown = 0;
 volatile uint32_t n64_diag_read_addr_fail = 0;  // Failed to receive address bytes on READ
 volatile uint32_t n64_diag_write_buf_fail = 0;  // Failed to receive data on WRITE
 
-// Boot sequence capture: first 20 command bytes received
+// Boot sequence capture: first 20 command bytes received (resets on probe)
 #define N64_BOOT_CAPTURE_SIZE 20
 volatile uint8_t n64_boot_cmds[N64_BOOT_CAPTURE_SIZE];
+
+// Full command history: never resets, captures all commands
+#define N64_CMD_HISTORY_SIZE 40
+volatile uint8_t n64_cmd_history[N64_CMD_HISTORY_SIZE];
+volatile uint8_t n64_cmd_history_count = 0;
 volatile uint8_t n64_boot_cmd_count = 0;
 
 // Default instances
@@ -304,6 +309,11 @@ bool __no_inline_not_in_flash_func(N64Console_WaitForPoll)(N64Console_t* console
         }
         n64_diag_phase = 1;
 
+        // Capture non-POLL command history (never resets)
+        if (received[0] != 0x01 && n64_cmd_history_count < N64_CMD_HISTORY_SIZE) {
+            n64_cmd_history[n64_cmd_history_count++] = received[0];
+        }
+
         // Record first receive timestamp
         if (n64_diag_first_rx_us == 0) {
             n64_diag_first_rx_us = timer_hw->timelr;
@@ -327,31 +337,43 @@ bool __no_inline_not_in_flash_func(N64Console_WaitForPoll)(N64Console_t* console
             n64_boot_cmds[n64_boot_cmd_count++] = received[0];
         }
 
+        // Deferred pak advertisement: report no pak during initial boot probes
+        // to avoid games that can't handle our pak emulation (e.g., Cruisin' USA).
+        // After first POLL, switch to pak present so games can detect rumble pak.
+        // RESET restarts the deferred sequence (pak hidden again until next POLL).
+        static bool pak_advertised = false;
+
         // Respond with reply delay matching real controller timing (~4μs after stop bit).
         // n64_send_bytes waits for line-high first, then n64_delay_us adds the gap.
         switch ((N64Command)received[0]) {
             case N64Command_RESET: {
-                // RESET response must set PAK_CHANGED bit (real controller behavior)
                 n64_status_t reset_status = default_n64_status;
-                reset_status.status |= N64_STATUS_PAK_CHANGED;
+                // Hide pak during boot — game probes after RESET
+                reset_status.status = pak_advertised ? (default_n64_status.status | N64_STATUS_PAK_CHANGED) : 0x00;
+                pak_advertised = false;
                 n64_delay_us(n64_reply_delay);
                 n64_send_bytes(&console->_port, (uint8_t *)&reset_status, sizeof(n64_status_t));
                 n64_diag_probe_count++;
                 n64_diag_total_probes++;
                 break;
             }
-            case N64Command_PROBE:
+            case N64Command_PROBE: {
+                n64_status_t probe_status = default_n64_status;
+                if (!pak_advertised) probe_status.status = 0x00;
                 n64_delay_us(n64_reply_delay);
-                n64_send_bytes(&console->_port, (uint8_t *)&default_n64_status, sizeof(n64_status_t));
+                n64_send_bytes(&console->_port, (uint8_t *)&probe_status, sizeof(n64_status_t));
                 n64_diag_probe_count++;
                 n64_diag_total_probes++;
                 break;
+            }
 
             case N64Command_POLL: {
                 // Set console active before sending — POLL may be the first
                 // command seen (e.g., Everdrive skips PROBE after game boot)
                 extern volatile bool n64_console_active;
                 if (!n64_console_active) n64_console_active = true;
+                // After first poll, advertise pak on subsequent probes
+                pak_advertised = true;
 
                 n64_delay_us(n64_reply_delay);
                 n64_send_bytes(&console->_port, (uint8_t *)&n64_report, sizeof(n64_report_t));
@@ -366,11 +388,10 @@ bool __no_inline_not_in_flash_func(N64Console_WaitForPoll)(N64Console_t* console
                 uint16_t addr = ((uint16_t)addr_bytes[0] << 8) | addr_bytes[1];
                 uint16_t real_addr = addr & 0xFFE0;
 
-                // 0x8000: rumble pak signature (0x80-filled)
-                // Other: zeros
-                uint8_t *response = (real_addr == PAK_ID_ADDR)
-                    ? pak_response_rumble_id
-                    : pak_response_zeros;
+                // Rumble pak returns 0x80 for all addresses except 0xC000 (rumble control)
+                uint8_t *response = (real_addr == N64_RUMBLE_PAK_ADDR)
+                    ? pak_response_zeros
+                    : pak_response_rumble_id;
 
                 n64_delay_us(n64_reply_delay);
                 n64_send_bytes(&console->_port, response, N64_PAK_DATA_SIZE + 1);
@@ -420,11 +441,22 @@ bool __no_inline_not_in_flash_func(N64Console_WaitForPoll)(N64Console_t* console
                 break;
             }
 
+            case 0x1D: {
+                // PixelFX N64 Game ID: 1 command + 10 data bytes, no response.
+                // Sent by game software for N64Digital/Retro GEM per-game settings.
+                // Fire-and-forget — absorb payload and return to receive.
+                uint8_t game_id[10];
+                joybus_receive_bytes(&console->_port, game_id, 10, n64_receive_timeout_us, true);
+                break;
+            }
+
             default:
                 n64_diag_last_cmd = received[0];
                 n64_diag_total_unknown++;
+                // Unknown commands: wait for trailing data then reset SM
                 n64_delay_us(n64_reset_wait_period_us);
                 n64_reset_to_receive(&console->_port);
+                break;
         }
 
         // Update diagnostics AFTER response (not timing-critical)
