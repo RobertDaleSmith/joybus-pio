@@ -337,31 +337,32 @@ bool __no_inline_not_in_flash_func(N64Console_WaitForPoll)(N64Console_t* console
             n64_boot_cmds[n64_boot_cmd_count++] = received[0];
         }
 
-        // Deferred pak advertisement: report no pak during initial boot probes
-        // to avoid games that can't handle our pak emulation (e.g., Cruisin' USA).
-        // After first POLL, switch to pak present so games can detect rumble pak.
-        // RESET restarts the deferred sequence (pak hidden again until next POLL).
-        static bool pak_advertised = false;
+        // Deferred pak advertisement (BlueRetro-style 32-frame ramp):
+        // Report no pak for the first 32 POLLs (~500ms at 60Hz), then
+        // SLOT_CHANGE for 1 frame, then SLOT_OCCUPY permanently.
+        // Avoids triggering buggy pak detection in games like Cruisin' USA.
+        // RESET restarts the counter for fresh boot detection.
+        #define PAK_DEFER_FRAMES 32
+        static uint8_t pak_defer_count = PAK_DEFER_FRAMES;
 
         // Respond with reply delay matching real controller timing (~4μs after stop bit).
         // n64_send_bytes waits for line-high first, then n64_delay_us adds the gap.
         switch ((N64Command)received[0]) {
-            case N64Command_RESET: {
-                n64_status_t reset_status = default_n64_status;
-                // Hide pak during boot — game probes after RESET
-                reset_status.status = pak_advertised ? (default_n64_status.status | N64_STATUS_PAK_CHANGED) : 0x00;
-                pak_advertised = false;
-                n64_delay_us(n64_reply_delay);
-                n64_send_bytes(&console->_port, (uint8_t *)&reset_status, sizeof(n64_status_t));
-                n64_diag_probe_count++;
-                n64_diag_total_probes++;
-                break;
-            }
+            case N64Command_RESET:
             case N64Command_PROBE: {
-                n64_status_t probe_status = default_n64_status;
-                if (!pak_advertised) probe_status.status = 0x00;
+                // PROBE and RESET return same response (matches usb64, BlueRetro)
+                n64_status_t status = default_n64_status;
+                if (pak_defer_count > 1) {
+                    status.status = 0x00;  // No pak during boot ramp
+                } else if (pak_defer_count == 1) {
+                    status.status = N64_STATUS_PAK_PRESENT | N64_STATUS_PAK_CHANGED;
+                }
+                // else: pak_defer_count == 0 → default status (pak present)
+                if ((N64Command)received[0] == N64Command_RESET) {
+                    pak_defer_count = PAK_DEFER_FRAMES;  // Restart ramp
+                }
                 n64_delay_us(n64_reply_delay);
-                n64_send_bytes(&console->_port, (uint8_t *)&probe_status, sizeof(n64_status_t));
+                n64_send_bytes(&console->_port, (uint8_t *)&status, sizeof(n64_status_t));
                 n64_diag_probe_count++;
                 n64_diag_total_probes++;
                 break;
@@ -372,8 +373,8 @@ bool __no_inline_not_in_flash_func(N64Console_WaitForPoll)(N64Console_t* console
                 // command seen (e.g., Everdrive skips PROBE after game boot)
                 extern volatile bool n64_console_active;
                 if (!n64_console_active) n64_console_active = true;
-                // After first poll, advertise pak on subsequent probes
-                pak_advertised = true;
+                // Count down deferred pak ramp
+                if (pak_defer_count > 0) pak_defer_count--;
 
                 n64_delay_us(n64_reply_delay);
                 n64_send_bytes(&console->_port, (uint8_t *)&n64_report, sizeof(n64_report_t));
