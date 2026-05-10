@@ -67,8 +67,13 @@ void __no_inline_not_in_flash_func(joybus_send_bytes)(
     uint8_t *bytes,
     uint len
 ) {
-    // Wait for line to be high before sending anything.
+    // Wait for line to be high before sending anything. Bounded — without
+    // a timeout, a misbehaving slave (e.g. gba-as-controller payload that
+    // entered GPIO mode and stalled) holds the line low and we wedge the
+    // whole main loop until watchdog reset.
+    absolute_time_t deadline = make_timeout_time_us(2000);
     while (!gpio_get(port->pin)) {
+        if (time_reached(deadline)) break;
         tight_loop_contents();
     }
 

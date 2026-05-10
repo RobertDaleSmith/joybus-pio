@@ -24,7 +24,9 @@
 // Give a whole 5 bytes of leniency on receive so the controller has time to do processing
 // before responding. And another byte of leniency because the joybus_receive_bytes (and thus
 // the timeout) starts soon after the PIO starts sending our first byte.
-#define GC_RECEIVE_TIMEOUT_US (5 * GC_INCOMING_BIT_LENGTH_US * 10)  // 200μs
+// Bumped from 200µs to 1ms — gba-as-controller payload halts the GBA CPU
+// between SIO interrupts; it needs a moment to wake up and respond.
+#define GC_RECEIVE_TIMEOUT_US 1000
 
 // ============================================================================
 // Internal Functions
