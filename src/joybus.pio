@@ -61,7 +61,9 @@ static inline pio_sm_config joybus_program_get_config(PIO pio, uint sm, uint off
 
     int cycles_per_bit = joybus_T1 + joybus_T2 + joybus_T3;
     int bitrate = 250000;
-    float div = clock_get_hz(clk_sys) / (cycles_per_bit * bitrate);
+    // Float divide: with integers 125 MHz / 10 MHz gave 12, not 12.5, so every
+    // bit ran 4.2% fast on any clock that is not a multiple of 10 MHz.
+    float div = (float)clock_get_hz(clk_sys) / (float)(cycles_per_bit * bitrate);
     sm_config_set_clkdiv(&c, div);
 
     return c;
